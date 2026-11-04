@@ -11,4 +11,3 @@ while time.monotonic() - start < 3.0:
     for n in range(10000):
         iterations += (n * n) % 97
 print('Demo finished; checksum:', iterations, 'memory bytes:', len(buffer))
-
