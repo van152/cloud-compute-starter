@@ -10,7 +10,7 @@ python3 cloudstat.py start
 ```
 
 This launches one **silent, detached monitor** per current working directory.
-It continuously samples visible cgroup CPU/memory and network counters every
+It continuously samples CPU/memory (cgroup v2, then cgroup v1, then /proc) and network counters every
 10 seconds, independently of your computation commands. Repeat `start` is safe.
 Run your work normally without wrapping each command or polling the monitor.
 It creates `runs/background/current.json` and a session directory with
