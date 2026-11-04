@@ -5,6 +5,8 @@ import argparse
 import csv
 import contextlib
 import io
+import fcntl
+import tempfile
 import datetime as dt
 import json
 import os
@@ -292,7 +294,196 @@ def run_task(interval, command, output_dir=None):
     return code
 
 
+
+
+# Background recording is deliberately independent of any individual workload.
+# Only one monitor is active per project working directory. All writes are local.
+def utc_now():
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def background_root():
+    return (OUT / 'background').resolve()
+
+
+def process_identity(pid):
+    """Return Linux /proc start ticks, or None for a missing/zombie process."""
+    try:
+        stat = Path('/proc') / str(pid) / 'stat'
+        tail = stat.read_text().rsplit(')', 1)[1].split()
+        if tail[0] in ('Z', 'X', 'x'):
+            return None
+        return int(tail[19])  # /proc/<pid>/stat field 22 (starttime).
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def atomic_json(path, info):
+    target = Path(path)
+    # Different processes may write this on startup/shutdown. Never expose partial JSON.
+    temp = target.with_name(target.name + '.' + str(os.getpid()) + '.tmp')
+    try:
+        with temp.open('x', encoding='utf-8') as f:
+            json.dump(info, f, indent=2, sort_keys=True)
+            f.write('\\n')
+            f.flush()
+        os.replace(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def read_control(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
+        if isinstance(data, dict):
+            return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def is_active(info):
+    if not info or info.get('state') != 'running':
+        return False
+    pid, start = info.get('pid'), info.get('start_ticks')
+    return (isinstance(pid, int) and pid > 0 and isinstance(start, int)
+            and process_identity(pid) == start)
+
+
+def background_event(folder, event, **kwargs):
+    data = dict(timestamp_utc=utc_now(), event=event, **kwargs)
+    with (Path(folder) / 'events.jsonl').open('a', encoding='utf-8') as f:
+        f.write(json.dumps(data, sort_keys=True) + '\\n')
+        f.flush()
+
+
+def background_worker(interval, folder, control):
+    """Private detached process; records until SIGTERM or cloud shutdown."""
+    folder, control = Path(folder), Path(control)
+    lock_path = control.parent / '.cloudstat.lock'
+    with lock_path.open('a+b') as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 2  # Another monitor already holds the lock.
+        info = dict(state='running', pid=os.getpid(),
+                    start_ticks=process_identity(os.getpid()),
+                    started_utc=utc_now(), interval_s=interval,
+                    directory=str(folder))
+        atomic_json(control, info)
+        error = None
+        result_code = None
+        try:
+            atomic_json(folder / 'environment.json', environment())
+            background_event(folder, 'started', pid=os.getpid(), interval_s=interval)
+            result_code = record(interval, [], folder / 'resources.csv')
+        except Exception as exc:
+            error = '%s: %s' % (type(exc).__name__, exc)
+            background_event(folder, 'error', message=error)
+        finally:
+            info['state'] = 'stopped' if result_code in (130, 143) else 'failed'
+            info['finished_utc'] = utc_now()
+            if error:
+                info['error'] = error
+            if result_code is not None:
+                info['exit_code'] = result_code
+            # A failure before CSV creation still leaves an actionable error message.
+            if (folder / 'resources.csv').exists():
+                report = io.StringIO()
+                try:
+                    with contextlib.redirect_stdout(report):
+                        summary(folder / 'resources.csv')
+                    (folder / 'summary.txt').write_text(report.getvalue(), encoding='utf-8')
+                except (OSError, ValueError, KeyError) as exc:
+                    info['summary_error'] = str(exc)
+            atomic_json(folder / 'result.json', info)
+            background_event(folder, info['state'], exit_code=result_code, error=error)
+            # Only the owner holding the process lock can replace the active pointer.
+            atomic_json(control, info)
+        return 0 if info['state'] == 'stopped' else 1
+
+
+def background_start(interval):
+    root = background_root()
+    root.mkdir(parents=True, exist_ok=True)
+    control = root / 'current.json'
+    current = read_control(control)
+    if is_active(current):
+        print('Already recording in background:', current['directory'])
+        return 0
+    stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ-')
+    folder = Path(tempfile.mkdtemp(prefix=stamp, dir=root))
+    folder.chmod(0o700)
+    with (folder / 'daemon.log').open('x', encoding='utf-8') as out:
+        child = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), '_background_worker',
+             str(interval), str(folder), str(control)],
+            stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+            start_new_session=True, cwd=os.getcwd(), close_fds=True)
+    # Startup handshake: show success only after the child has created its PID record.
+    deadline = time.monotonic() + 4
+    while time.monotonic() < deadline:
+        latest = read_control(control)
+        if latest and latest.get('pid') == child.pid and is_active(latest):
+            print('Background recording started:', folder)
+            return 0
+        if child.poll() is not None:
+            break
+        time.sleep(0.05)
+    latest = read_control(control)
+    if is_active(latest):
+        print('Already recording in background:', latest['directory'])
+        return 0
+    print('Could not start background monitor; see', folder / 'daemon.log', file=sys.stderr)
+    return 1
+
+
+def background_status(as_json=False):
+    info = read_control(background_root() / 'current.json')
+    if not info:
+        output = dict(state='not_started')
+    else:
+        output = dict(info)
+        if output.get('state') == 'running' and not is_active(output):
+            output['state'] = 'interrupted'
+    if as_json:
+        print(json.dumps(output, indent=2, sort_keys=True))
+    else:
+        print('Background monitor:', output['state'])
+        if output.get('directory'):
+            print('Log directory:', output['directory'])
+    return 0
+
+
+def background_stop():
+    control = background_root() / 'current.json'
+    info = read_control(control)
+    if not is_active(info):
+        print('No active background monitor.')
+        return 0
+    pid = info['pid']
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        print('Monitor already exited.')
+        return 0
+    deadline = time.monotonic() + 7
+    while time.monotonic() < deadline:
+        updated = read_control(control)
+        if updated and updated.get('pid') == pid and updated.get('state') != 'running':
+            print('Background recording stopped; logs:', info['directory'])
+            return 0
+        if process_identity(pid) != info['start_ticks']:
+            print('Monitor exited; logs:', info['directory'])
+            return 0
+        time.sleep(0.1)
+    print('Stop signal sent; final report is still being written:', info['directory'])
+    return 0
+
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) == 4 and argv[0] == '_background_worker':
+        return background_worker(float(argv[1]), argv[2], argv[3])
     parser = argparse.ArgumentParser(description=__doc__)
     subs = parser.add_subparsers(dest='action', required=True)
     env_parser = subs.add_parser('env', help='print a safe environment report')
@@ -305,12 +496,25 @@ def main(argv=None):
     one.add_argument('--interval', type=float, default=10, help='seconds (>= 1)')
     one.add_argument('--output-dir', help='new directory for this run (must not exist)')
     one.add_argument('command', nargs=argparse.REMAINDER, help='required command after --')
+    back = subs.add_parser('start', help='start silent continuous background logging')
+    back.add_argument('--interval', type=float, default=10, help='sample interval in seconds (>= 1)')
+    status = subs.add_parser('status', help='show background monitoring state')
+    status.add_argument('--json', action='store_true', help='machine-readable status')
+    subs.add_parser('stop', help='stop background monitor and finalize logs')
     summ = subs.add_parser('summary', help='summarize a saved CSV')
     summ.add_argument('file')
     args = parser.parse_args(argv)
     try:
         if args.action == 'env':
             env(args.json)
+        elif args.action == 'start':
+            if not 1 <= args.interval <= 86400:
+                parser.error('interval must be between 1 and 86400 seconds')
+            return background_start(args.interval)
+        elif args.action == 'status':
+            return background_status(args.json)
+        elif args.action == 'stop':
+            return background_stop()
         elif args.action in ('record', 'run'):
             if not 1 <= args.interval <= 86400:
                 parser.error('interval must be between 1 and 86400 seconds')
