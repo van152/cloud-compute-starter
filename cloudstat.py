@@ -3,6 +3,8 @@
 
 import argparse
 import csv
+import contextlib
+import io
 import datetime as dt
 import json
 import os
@@ -187,7 +189,8 @@ def record(interval, command, output=None):
                 f.flush()  # Flush userspace buffers; host storage may still be ephemeral.
                 previous, last = current, now
                 if proc is not None and proc.poll() is not None:
-                    return proc.returncode
+                    # Map a child terminated by signal N to conventional 128+N.
+                    return 128 - proc.returncode if proc.returncode < 0 else proc.returncode
         except KeyboardInterrupt:
             stop_child(proc, signal.SIGINT)
             return 130
@@ -243,6 +246,52 @@ def summary(path):
         print('Network: unavailable')
 
 
+
+def run_task(interval, command, output_dir=None):
+    """One-command run: capture environment, task resources and a final summary."""
+    if not command:
+        raise ValueError('run requires a task command after --')
+    stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+    folder = Path(output_dir) if output_dir else OUT / (stamp + '-' + str(os.getpid()))
+    folder.mkdir(parents=True, exist_ok=False)
+    print('Run directory:', folder, flush=True)
+    (folder / 'environment.json').write_text(
+        json.dumps(environment(), indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    start = time.monotonic()
+    started_utc = dt.datetime.now(dt.timezone.utc).isoformat()
+    error = None
+    try:
+        code = record(interval, command, folder / 'resources.csv')
+    except OSError as exc:
+        # e.g. command not found. Preserve diagnosis even if the command never starts.
+        code = 127
+        error = str(exc)
+    duration = round(time.monotonic() - start, 3)
+    result = {
+        'started_utc': started_utc,
+        'finished_utc': dt.datetime.now(dt.timezone.utc).isoformat(),
+        'duration_s': duration,
+        'interval_s': interval,
+        'exit_code': code,
+        'status': 'completed' if code == 0 else 'failed',
+    }
+    if error:
+        result['error'] = error
+    (folder / 'result.json').write_text(
+        json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        summary(folder / 'resources.csv')
+    report = output.getvalue()
+    (folder / 'summary.txt').write_text(report, encoding='utf-8')
+    print(report, end='')
+    print('Task exit code:', code)
+    if error:
+        print('Task launch error:', error, file=sys.stderr)
+    print('Saved environment.json, resources.csv, summary.txt, result.json to:', folder)
+    return code
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     subs = parser.add_subparsers(dest='action', required=True)
@@ -252,18 +301,26 @@ def main(argv=None):
     mon.add_argument('--interval', type=float, default=10, help='seconds (>= 1)')
     mon.add_argument('--output', help='CSV path; default runs/<UTC-time>-<PID>.csv')
     mon.add_argument('command', nargs=argparse.REMAINDER, help='command after --')
+    one = subs.add_parser('run', help='run task and save environment, CSV, summary and result')
+    one.add_argument('--interval', type=float, default=10, help='seconds (>= 1)')
+    one.add_argument('--output-dir', help='new directory for this run (must not exist)')
+    one.add_argument('command', nargs=argparse.REMAINDER, help='required command after --')
     summ = subs.add_parser('summary', help='summarize a saved CSV')
     summ.add_argument('file')
     args = parser.parse_args(argv)
     try:
         if args.action == 'env':
             env(args.json)
-        elif args.action == 'record':
+        elif args.action in ('record', 'run'):
             if not 1 <= args.interval <= 86400:
                 parser.error('interval must be between 1 and 86400 seconds')
             command = args.command[1:] if args.command and args.command[0] == '--' else args.command
+            if args.action == 'run' and not command:
+                parser.error('run requires a command after --')
             if args.command == ['--']:
                 parser.error('expected a command after --')
+            if args.action == 'run':
+                return run_task(args.interval, command, args.output_dir)
             return record(args.interval, command, args.output)
         else:
             summary(args.file)
