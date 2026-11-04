@@ -39,6 +39,50 @@ class CloudstatTests(unittest.TestCase):
         with patch.object(cloudstat, 'read', side_effect=fake_read):
             self.assertEqual(cloudstat.snapshot(), (123456, 4096, {'eth0': (11, 21)}))
 
+    def test_cgroup_v1_fallback(self):
+        files = {
+            '/sys/fs/cgroup/cpuacct/cpuacct.usage': '7000000000',
+            '/sys/fs/cgroup/memory/memory.usage_in_bytes': '8192',
+            '/sys/fs/cgroup/memory/memory.limit_in_bytes': '9223372036854771712',
+            '/sys/fs/cgroup/cpu/cpu.cfs_quota_us': '-1',
+            '/sys/fs/cgroup/cpu/cpu.cfs_period_us': '100000',
+        }
+        with patch.object(cloudstat, 'read', side_effect=files.get):
+            self.assertEqual(cloudstat.cpu_usage(), (7000000, 'cgroup_v1'))
+            self.assertEqual(cloudstat.memory_usage(), (8192, 'cgroup_v1'))
+            self.assertEqual(cloudstat.memory_limit(), 'max')
+            self.assertEqual(cloudstat.cpu_quota(), 'max 100000')
+        files['/sys/fs/cgroup/cpu/cpu.cfs_quota_us'] = '200000'
+        files['/sys/fs/cgroup/memory/memory.limit_in_bytes'] = '1073741824'
+        with patch.object(cloudstat, 'read', side_effect=files.get):
+            self.assertEqual(cloudstat.cpu_quota(), '200000 100000')
+            self.assertEqual(cloudstat.memory_limit(), '1073741824')
+
+    def test_comounted_cpu_cpuacct_v1(self):
+        files = {'/sys/fs/cgroup/cpu,cpuacct/cpuacct.usage': '5000'}
+        with patch.object(cloudstat, 'read', side_effect=files.get):
+            self.assertEqual(cloudstat.cpu_usage(), (5, 'cgroup_v1'))
+
+    def test_host_proc_fallback_without_cgroups(self):
+        files = {
+            '/proc/stat': 'cpu  100 10 50 1000 40 5 5 30 0 0\ncpu0 1 1 1 1',
+            '/proc/meminfo': 'MemTotal: 1000 kB\nMemFree: 100 kB\nMemAvailable: 400 kB',
+        }
+        with patch.object(cloudstat, 'read', side_effect=files.get), \
+                patch.object(cloudstat.os, 'sysconf', return_value=100):
+            # busy = user+nice+system+irq+softirq+steal = 200 ticks = 2 s.
+            self.assertEqual(cloudstat.cpu_usage(), (2000000, 'host_proc'))
+            self.assertEqual(cloudstat.memory_usage(), (600 * 1024, 'host_proc'))
+
+    def test_nothing_readable_reports_unavailable(self):
+        with patch.object(cloudstat, 'read', return_value=None):
+            self.assertEqual(cloudstat.cpu_usage(), (None, None))
+            self.assertEqual(cloudstat.memory_usage(), (None, None))
+            self.assertIsNone(cloudstat.cpu_quota())
+            env = cloudstat.environment()
+            self.assertEqual(env['cpu_metric_source'], 'unavailable')
+            self.assertEqual(env['memory_metric_source'], 'unavailable')
+
     def test_summary_weights_only_valid_cpu_intervals(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'sample.csv'

@@ -53,16 +53,21 @@ def environment():
         free_bytes = shutil.disk_usage('.').free
     except OSError:
         free_bytes = None
+    current_memory, memory_source = memory_usage()
+    if memory_source == 'host_proc':
+        current_memory = None  # Keep this field cgroup-only; host total is reported above.
     return {
         'system': platform.system(),
         'kernel': platform.release(),
         'architecture': platform.machine(),
         'cpu_model': cpu_model(),
         'visible_cpus': visible_cpus,
-        'cgroup_cpu_quota': read('/sys/fs/cgroup/cpu.max'),
+        'cgroup_cpu_quota': cpu_quota(),
         'host_visible_memory_total': memory.get('MemTotal'),
-        'cgroup_memory_limit_bytes': read('/sys/fs/cgroup/memory.max'),
-        'cgroup_memory_current_bytes': read('/sys/fs/cgroup/memory.current'),
+        'cgroup_memory_limit_bytes': memory_limit(),
+        'cgroup_memory_current_bytes': current_memory,
+        'cpu_metric_source': cpu_usage()[1] or 'unavailable',
+        'memory_metric_source': memory_source or 'unavailable',
         'working_filesystem_free_bytes': free_bytes,
         'python': platform.python_version(),
     }
@@ -96,20 +101,107 @@ def parse_network(raw):
     return interfaces
 
 
-def snapshot():
-    stat = read('/sys/fs/cgroup/cpu.stat') or ''
-    cpu_usec = None
-    for line in stat.splitlines():
+CG = '/sys/fs/cgroup'
+# cgroup v1 controllers may be mounted separately or co-mounted as "cpu,cpuacct".
+V1_CPUACCT = (CG + '/cpuacct', CG + '/cpu,cpuacct', CG + '/cpu')
+V1_CPU = (CG + '/cpu', CG + '/cpu,cpuacct')
+V1_UNLIMITED = 2 ** 60  # v1 reports "no limit" as a huge page-aligned number.
+
+
+def as_int(text):
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def first(paths):
+    for path in paths:
+        value = read(path)
+        if value is not None:
+            return value
+    return None
+
+
+def cpu_usage():
+    """Return (cumulative CPU microseconds, source).
+
+    Order: cgroup v2 -> cgroup v1 cpuacct -> whole-host /proc/stat.
+    """
+    for line in (read(CG + '/cpu.stat') or '').splitlines():
         label, _, value = line.partition(' ')
         if label == 'usage_usec':
-            try:
-                cpu_usec = int(value)
-            except ValueError:
-                pass
+            usec = as_int(value)
+            if usec is not None:
+                return usec, 'cgroup_v2'
             break
-    mem_text = read('/sys/fs/cgroup/memory.current')
-    mem_bytes = int(mem_text) if mem_text and mem_text.isdigit() else None
-    return cpu_usec, mem_bytes, parse_network(read('/proc/net/dev'))
+    nsec = as_int(first(p + '/cpuacct.usage' for p in V1_CPUACCT))
+    if nsec is not None:
+        return nsec // 1000, 'cgroup_v1'
+    for line in (read('/proc/stat') or '').splitlines():
+        parts = line.split()
+        if parts and parts[0] == 'cpu':
+            # user nice system idle iowait irq softirq steal: busy excludes idle/iowait.
+            ticks = [as_int(v) or 0 for v in parts[1:9]]
+            ticks += [0] * (8 - len(ticks))
+            busy = sum(ticks[:3]) + sum(ticks[5:8])
+            try:
+                hz = os.sysconf('SC_CLK_TCK')
+            except (ValueError, OSError, AttributeError):
+                hz = 100
+            return busy * 1_000_000 // hz, 'host_proc'
+    return None, None
+
+
+def host_memory_used():
+    info = {}
+    for line in (read('/proc/meminfo') or '').splitlines():
+        key, _, value = line.partition(':')
+        info[key] = as_int(value.split()[0]) if value.split() else None
+    total, available = info.get('MemTotal'), info.get('MemAvailable')
+    if total is None or available is None:
+        return None
+    return max(0, total - available) * 1024
+
+
+def memory_usage():
+    """Return (current memory bytes, source); cgroup values include page cache."""
+    value = as_int(read(CG + '/memory.current'))
+    if value is not None:
+        return value, 'cgroup_v2'
+    value = as_int(read(CG + '/memory/memory.usage_in_bytes'))
+    if value is not None:
+        return value, 'cgroup_v1'
+    value = host_memory_used()
+    if value is not None:
+        return value, 'host_proc'
+    return None, None
+
+
+def cpu_quota():
+    """cgroup CPU quota in v2 "quota period" form ("max 100000" = unlimited)."""
+    value = read(CG + '/cpu.max')
+    if value is not None:
+        return value
+    quota = as_int(first(p + '/cpu.cfs_quota_us' for p in V1_CPU))
+    period = as_int(first(p + '/cpu.cfs_period_us' for p in V1_CPU))
+    if quota is None or period is None:
+        return None
+    return '%s %d' % ('max' if quota < 0 else quota, period)
+
+
+def memory_limit():
+    value = read(CG + '/memory.max')
+    if value is not None:
+        return value
+    limit = as_int(read(CG + '/memory/memory.limit_in_bytes'))
+    if limit is None:
+        return None
+    return 'max' if limit >= V1_UNLIMITED else str(limit)
+
+
+def snapshot():
+    return cpu_usage()[0], memory_usage()[0], parse_network(read('/proc/net/dev'))
 
 
 def delta_net(now, old, index):
@@ -238,9 +330,9 @@ def summary(path):
         print('CPU cores: average', round(core_seconds / measured_seconds, 3),
               '| peak', peak_cores, '(sample average)')
     else:
-        print('CPU cores: unavailable (cgroup v2 may be inaccessible)')
+        print('CPU cores: unavailable (no readable cgroup or /proc/stat counters)')
     if peak_memory is not None:
-        print('Peak cgroup memory:', round(peak_memory / 1024**2, 1), 'MiB')
+        print('Peak memory:', round(peak_memory / 1024**2, 1), 'MiB')
     if network_measured:
         print('Network received / sent:', round(received / 1024**2, 3), '/',
               round(sent / 1024**2, 3), 'MiB')

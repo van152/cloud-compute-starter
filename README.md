@@ -73,20 +73,11 @@ python3 cloudstat.py run --interval 5 --output-dir runs/experiment-001 -- python
 
 The output directory must **not** exist already. Neither results nor machine reports are automatically committed or uploaded.
 
-## Use in a different project / new cloud session
+## AI agents
 
-From the **project's working directory**, clone this repository once in that environment, then start background recording:
+For an AI coding agent, point it at this repository and ask it to follow [AGENTS.md](AGENTS.md). Agents working directly from this GitHub template can read those instructions automatically if their runtime supports `AGENTS.md`. The template does **not** install itself in unrelated repositories or start automatically in later sessions; each fresh VM needs its own clone and `start`.
 
-```bash
-git clone --depth 1 https://github.com/van152/cloud-compute-starter.git /tmp/cloud-compute-starter
-python3 /tmp/cloud-compute-starter/cloudstat.py start
-```
-
-Now execute your normal tasks. This leaves monitoring outputs in the current project's `runs/` directory. Add `runs/` to the **project's** `.gitignore` to prevent accidentally committing machine information. An already-existing `/tmp/cloud-compute-starter` can be reused. If the VM is replaced, clone again. The template does **not** install itself in unrelated repositories or start automatically in later sessions.
-
-For an AI coding agent, point it at this repository and ask it to follow [AGENTS.md](AGENTS.md). Agents working directly from this GitHub template can read those instructions automatically if their runtime supports `AGENTS.md`.
-
-**中文快速使用：** 在云端项目目录中克隆仓库，然后运行 `python3 /tmp/cloud-compute-starter/cloudstat.py start`。后台每 10 秒静默保存 CPU、内存、网络采样；AI 正常执行其他任务即可。`status` 查看监控是否还在，`stop` 停止并生成报告。也可以使用 `run -- 任务命令` 生成单个计算任务的报告。不需要安装 Python 依赖或消耗 GitHub Actions 额度。
+**中文快速使用：** 在云端项目目录中克隆仓库，然后运行 `python3 /tmp/cloud-compute-starter/cloudstat.py start`。后台每 10 秒静默保存 CPU、内存、网络采样（自动兼容 cgroup v2、cgroup v1，都没有时退回 `/proc` 整机数据）；AI 正常执行其他任务即可。`status` 查看监控是否还在，`stop` 停止并生成报告。也可以使用 `run -- 任务命令` 生成单个计算任务的报告。不需要安装 Python 依赖或消耗 GitHub Actions 额度。
 
 ## Other commands
 
@@ -106,13 +97,23 @@ python3 -m unittest discover -s tests -v   # Local tests, no Actions
 
 | Metric | Meaning | Limitation |
 | --- | --- | --- |
-| `cpu_cores` | Delta of cgroup v2 CPU time divided by sample interval; `1.0` ~ one fully used core | Includes other processes in the visible cgroup. Reported peak is the **highest sample average**, not an instantaneous peak |
-| `cgroup_memory_bytes` | Current cgroup v2 memory use | Includes other processes and page cache; not task-private RSS |
+| `cpu_cores` | Delta of CPU time divided by sample interval; `1.0` ~ one fully used core | Includes other processes in the visible cgroup (or the whole host for `host_proc`). Reported peak is the **highest sample average**, not an instantaneous peak |
+| `cgroup_memory_bytes` | Current memory use of the visible cgroup (column name kept for compatibility) | Includes other processes and page cache; not task-private RSS. With `host_proc` it is host-wide `MemTotal - MemAvailable` |
 | `received_bytes`, `sent_bytes` | Deltas from visible non-loopback network interface counters | Includes unrelated visible traffic, omits host/proxy traffic; **not billable cloud traffic** |
 | `elapsed_s` | Monotonic time since recording started | Wall-clock timestamps are separate |
-| `env` / `environment.json` | CPU model/affinity, cgroup quota, kernel, memory, disk free space, Python | CPU affinity and cgroup CPU quotas can disagree |
+| `env` / `environment.json` | CPU model/affinity, cgroup quota, kernel, memory, disk free space, Python, and `cpu_metric_source` / `memory_metric_source` | CPU affinity and cgroup CPU quotas can disagree |
 
-Missing or inaccessible cgroup v2 values are left blank, not invented. Network resets contribute zero rather than negative traffic; a new interface begins contributing on the next sample. GPU utilization, per-process network accounting, cloud billing, job checkpointing and artifact backups are **not** provided.
+### Where CPU and memory come from
+
+Each sample tries these sources in order and `environment.json` records which one was used:
+
+1. `cgroup_v2` – `/sys/fs/cgroup/cpu.stat` and `memory.current` (modern distros, most containers)
+2. `cgroup_v1` – `/sys/fs/cgroup/cpuacct/cpuacct.usage` (or `cpu,cpuacct`) and `memory/memory.usage_in_bytes` (older hosts and many sandboxed cloud VMs)
+3. `host_proc` – `/proc/stat` busy time and `/proc/meminfo`; whole-machine numbers when no cgroup counters are readable
+
+Quota/limit fields are normalized to the v2 style (`max 100000` = unlimited CPU, `max` = no memory limit).
+
+Values that no source can provide are left blank, not invented. Network resets contribute zero rather than negative traffic; a new interface begins contributing on the next sample. GPU utilization, per-process network accounting, cloud billing, job checkpointing and artifact backups are **not** provided.
 
 The recorder flushes its CSV after each sample, but a vanished cloud machine can still lose local files. For long-running research, save important checkpoints and results to durable storage independently.
 
