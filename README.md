@@ -1,8 +1,47 @@
 # Cloud Compute Starter
 
-A tiny, **dependency-free Linux template** for AI agents and scientific computing on temporary cloud machines. It records a machine snapshot, CPU, memory and visible network usage, plus task outcome. **Python 3 standard library only.** No GitHub Actions, cron, daemon, third-party cloud services or outgoing telemetry.
+A tiny, **dependency-free Linux template** for AI agents and scientific computing on temporary cloud machines. It records a machine snapshot, CPU, memory and visible network usage, plus task outcome. **Python 3 standard library only.** No GitHub Actions, cron, third-party cloud services or outgoing telemetry. An optional local background process records for the lifetime of the current cloud machine.
 
-## One command for AI agents (recommended)
+## Silent background recording (recommended for cloud sessions)
+
+Start **once** from your project directory, then use the terminal or AI agent normally:
+
+```bash
+python3 cloudstat.py start                  # Starts detached monitoring; samples every 10s
+python3 cloudstat.py status --json          # Optional: check if it is still running
+python3 cloudstat.py stop                   # Optional: finish and summarize the logs
+```
+
+This is **not** tied to a single task. It continues writing data while other shell commands and programs run. Repeating `start` in the same working directory does **not** start another worker. It writes nothing repeatedly to your terminal or chat. On each session startup, the background worker saves:
+
+```text
+runs/background/current.json                 # PID, latest status, active or last session path
+runs/background/<timestamp>-<id>/
+  environment.json                          # Environment snapshot at startup
+  resources.csv                             # Continuous CPU, RAM and network samples
+  events.jsonl                              # Background started/stopped/error events
+  daemon.log                                # Local diagnostic messages (normally minimal)
+  result.json                               # Final status after normal stop
+  summary.txt                               # Final resource summary after normal stop
+```
+
+`start` normally prints just one confirmation. No interactive dashboard, no uploads and no periodic chat messages. `events.jsonl` records **monitor lifecycle messages**, not the full stdout/stderr from every unrelated task. `resources.csv` continuously samples visible environment counters rather than a per-process account; if the cloud runtime isolates jobs in separate cgroups, those may not appear in the monitor's cgroup. At the default 10-second interval, expect approximately 8,640 CSV rows per day; provide enough disk space for a long run.
+
+The worker can survive the CLI and shell exiting on a normal Linux machine. It **cannot survive VM shutdown, deletion, or a cloud platform that kills all processes when a session ends**. Unflushed/ephemeral files can be lost. Each new machine needs a fresh `start`; no automatically installed service, reboot persistence, scheduling or GitHub Actions is used.
+
+### Start from an existing project without copying files
+
+From that project's working directory:
+
+```bash
+git clone --depth 1 https://github.com/van152/cloud-compute-starter.git /tmp/cloud-compute-starter
+python3 /tmp/cloud-compute-starter/cloudstat.py start
+# Then run your project tasks as usual; monitoring runs independently.
+```
+
+The output appears under your project's `runs/background/`. Add `runs/` to the project `.gitignore` to avoid exposing local metrics. Run `status` or `stop` from the **same working directory** as `start`.
+
+## Per-task report mode (optional)
 
 From this repository:
 
@@ -36,22 +75,25 @@ The output directory must **not** exist already. Neither results nor machine rep
 
 ## Use in a different project / new cloud session
 
-From the **project's working directory**, clone this repository once in that environment, then execute the tool by path:
+From the **project's working directory**, clone this repository once in that environment, then start background recording:
 
 ```bash
 git clone --depth 1 https://github.com/van152/cloud-compute-starter.git /tmp/cloud-compute-starter
-python3 /tmp/cloud-compute-starter/cloudstat.py run -- python3 your_task.py
+python3 /tmp/cloud-compute-starter/cloudstat.py start
 ```
 
-This leaves the monitoring outputs in the current project's `runs/` directory. Add `runs/` to the **project's** `.gitignore` to prevent accidentally committing machine information. An already-existing `/tmp/cloud-compute-starter` can be reused. If the VM is replaced, clone again. The template does **not** install itself in unrelated repositories or start automatically in later sessions.
+Now execute your normal tasks. This leaves monitoring outputs in the current project's `runs/` directory. Add `runs/` to the **project's** `.gitignore` to prevent accidentally committing machine information. An already-existing `/tmp/cloud-compute-starter` can be reused. If the VM is replaced, clone again. The template does **not** install itself in unrelated repositories or start automatically in later sessions.
 
 For an AI coding agent, point it at this repository and ask it to follow [AGENTS.md](AGENTS.md). Agents working directly from this GitHub template can read those instructions automatically if their runtime supports `AGENTS.md`.
 
-**中文快速使用：** 新云端机器上先克隆仓库，再用 `python3 /tmp/cloud-compute-starter/cloudstat.py run -- 实际运行命令` 包装计算任务。完成后查看 `runs/` 下的 `summary.txt` 和 `result.json`。不需要安装 Python 依赖，也不消耗 GitHub Actions 额度。
+**中文快速使用：** 在云端项目目录中克隆仓库，然后运行 `python3 /tmp/cloud-compute-starter/cloudstat.py start`。后台每 10 秒静默保存 CPU、内存、网络采样；AI 正常执行其他任务即可。`status` 查看监控是否还在，`stop` 停止并生成报告。也可以使用 `run -- 任务命令` 生成单个计算任务的报告。不需要安装 Python 依赖或消耗 GitHub Actions 额度。
 
 ## Other commands
 
 ```bash
+python3 cloudstat.py start                # Silent continuous background monitor
+python3 cloudstat.py status --json        # Read monitoring state
+python3 cloudstat.py stop                 # Stop and write final report
 python3 cloudstat.py env                  # Environment report on screen
 python3 cloudstat.py env --json           # Machine-readable report
 python3 cloudstat.py record --interval 10 # Monitor visible environment until Ctrl+C
