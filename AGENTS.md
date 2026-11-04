@@ -50,8 +50,8 @@ python3 -m unittest discover -s tests -v
 For a per-task `run`, read `result.json` and `summary.txt`; never infer
 that a computation succeeded merely because the background monitor is running.
 For background mode, `result.json` is finalized on `stop`, so inspect
-`status --json` (or `runs/background/current.json`) for the current state. `runs/` is gitignored and
-should not be committed automatically. Save important results outside ephemeral
+`status --json` (or `runs/background/current.json`) for the current state.
+`runs/` is gitignored and should not be committed automatically. Save important results outside ephemeral
 cloud storage as the user directs. The tool does not provide job checkpointing,
 per-process accounting, billable network accounting or GPU utilization.
 
