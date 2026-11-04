@@ -295,7 +295,6 @@ def run_task(interval, command, output_dir=None):
 
 
 
-
 # Background recording is deliberately independent of any individual workload.
 # Only one monitor is active per project working directory. All writes are local.
 def utc_now():
@@ -325,7 +324,7 @@ def atomic_json(path, info):
     try:
         with temp.open('x', encoding='utf-8') as f:
             json.dump(info, f, indent=2, sort_keys=True)
-            f.write('\\n')
+            f.write('\n')
             f.flush()
         os.replace(temp, target)
     finally:
@@ -353,7 +352,7 @@ def is_active(info):
 def background_event(folder, event, **kwargs):
     data = dict(timestamp_utc=utc_now(), event=event, **kwargs)
     with (Path(folder) / 'events.jsonl').open('a', encoding='utf-8') as f:
-        f.write(json.dumps(data, sort_keys=True) + '\\n')
+        f.write(json.dumps(data, sort_keys=True) + '\n')
         f.flush()
 
 
