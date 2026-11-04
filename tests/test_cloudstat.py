@@ -92,5 +92,71 @@ class CloudstatTests(unittest.TestCase):
         self.assertIn('interval must be', result.stderr)
 
 
+
+class OneCommandRunTests(unittest.TestCase):
+    def test_run_creates_all_reports_from_a_short_task(self):
+        import json
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'run-001'
+            with contextlib.redirect_stdout(StringIO()):
+                code = cloudstat.run_task(1, [sys.executable, '-c', 'print("done")'], target)
+            self.assertEqual(code, 0)
+            self.assertEqual(sorted(p.name for p in target.iterdir()), [
+                'environment.json', 'resources.csv', 'result.json', 'summary.txt'])
+            result = json.loads((target / 'result.json').read_text())
+            self.assertEqual(result['exit_code'], 0)
+            self.assertEqual(result['status'], 'completed')
+            self.assertIn('cpu_model', json.loads((target / 'environment.json').read_text()))
+            self.assertIn('Samples: 1', (target / 'summary.txt').read_text())
+
+    def test_run_failure_still_writes_reports(self):
+        import json
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'failed'
+            with contextlib.redirect_stdout(StringIO()):
+                code = cloudstat.run_task(1, [sys.executable, '-c', 'import sys;sys.exit(23)'], target)
+            self.assertEqual(code, 23)
+            result = json.loads((target / 'result.json').read_text())
+            self.assertEqual(result['status'], 'failed')
+            self.assertEqual(result['exit_code'], 23)
+            self.assertTrue((target / 'resources.csv').exists())
+
+    def test_run_missing_binary_exits_127_with_error_report(self):
+        import json
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'missing'
+            with contextlib.redirect_stdout(StringIO()), contextlib.redirect_stderr(StringIO()):
+                code = cloudstat.run_task(1, ['definitely_missing_cloudstat_command_12345'], target)
+            self.assertEqual(code, 127)
+            result = json.loads((target / 'result.json').read_text())
+            self.assertEqual(result['exit_code'], 127)
+            self.assertTrue(result['error'])
+            self.assertIn('No samples', (target / 'summary.txt').read_text())
+
+    def test_run_wont_overwrite_directory(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'existing'
+            target.mkdir()
+            sentinel = target / 'sentinel.txt'
+            sentinel.write_text('keep')
+            with self.assertRaises(FileExistsError):
+                cloudstat.run_task(1, [sys.executable, '-c', 'pass'], target)
+            self.assertEqual(sentinel.read_text(), 'keep')
+
+    def test_signal_exit_code_maps_to_shell_convention(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'signaled.csv'
+            command = [sys.executable, '-c',
+                       'import os,signal;os.kill(os.getpid(),signal.SIGTERM)']
+            with contextlib.redirect_stdout(StringIO()):
+                code = cloudstat.record(1, command, target)
+            self.assertEqual(code, 143)
+
+    def test_cli_run_requires_command(self):
+        result = subprocess.run([sys.executable, 'cloudstat.py', 'run', '--'],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('requires a command', result.stderr)
+
 if __name__ == '__main__':
     unittest.main()
