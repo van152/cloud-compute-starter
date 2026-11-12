@@ -1,0 +1,48 @@
+{
+  "accelerator_device_paths": {
+    "/dev/dri": false,
+    "/dev/kfd": false,
+    "/dev/nvidia0": false
+  },
+  "accelerator_tools": {
+    "nvidia-smi": false,
+    "rocm-smi": false,
+    "rocminfo": false
+  },
+  "architecture": "x86_64",
+  "cgroup": {
+    "cpu_quota_raw": null,
+    "memory_limit_bytes_raw": null
+  },
+  "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C",
+  "kernel": "6.18.57",
+  "memory": {
+    "MemAvailable": "9558548 kB",
+    "MemTotal": "10206468 kB",
+    "SwapFree": "0 kB",
+    "SwapTotal": "0 kB"
+  },
+  "model_cache_paths": {
+    "huggingface_home": false,
+    "torch_hub": false
+  },
+  "packages": {
+    "accelerate": null,
+    "huggingface_hub": null,
+    "llama_cpp": null,
+    "safetensors": null,
+    "sglang": null,
+    "torch": null,
+    "transformers": null,
+    "triton": null,
+    "vllm": null
+  },
+  "python": "3.12.14",
+  "system": "Linux",
+  "timestamp_utc": "2026-11-12T21:58:19.560447+00:00",
+  "visible_cpus": 9,
+  "working_filesystem": {
+    "free_bytes": 64087121920,
+    "total_bytes": 67586535424
+  }
+}
