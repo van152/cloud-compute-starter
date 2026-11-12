@@ -64,17 +64,14 @@ def summarize(records: list[dict], wall_s: float) -> dict:
     }
 
 
-def endpoint_info(base_url: str) -> tuple[str, str]:
+def endpoint_info(base_url: str) -> str:
     parsed = urllib.parse.urlsplit(base_url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ValueError("base URL must be an http:// or https:// URL with a hostname")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("do not put credentials or query parameters in the URL; use --api-key-env")
-    # Deliberately omit URL credentials, query parameters, and fragments.
-    host = parsed.hostname
-    if parsed.port:
-        host += f":{parsed.port}"
-    return host, parsed.path.rstrip("/")
+    # Deliberately omit URL credentials, query parameters, fragments, host, and path.
+    return parsed.scheme
 
 
 def request_once(args, prompt: str, tokenizer, request_index: int, warmup: bool = False) -> dict:
@@ -226,10 +223,10 @@ def main() -> int:
     if min(args.max_tokens, args.requests, args.concurrency) < 1 or args.warmup < 0 or args.timeout <= 0:
         parser.error("max-tokens, requests, and concurrency must be positive; warmup must be nonnegative; timeout must be positive")
     try:
-        host, path = endpoint_info(args.base_url)
+        scheme = endpoint_info(args.base_url)
     except ValueError as exc:
         parser.error(str(exc))
-    if not path:
+    if not urllib.parse.urlsplit(args.base_url).path.rstrip("/"):
         parser.error("base URL must include the API prefix, for example /v1")
 
     tokenizer = None
@@ -280,8 +277,7 @@ def main() -> int:
         "model": args.model,
         "engine": args.engine,
         "engine_version": args.engine_version,
-        "endpoint_host": host,
-        "endpoint_api_path": path,
+        "endpoint_scheme": scheme,
         "prompt_sha256": prompt_hash,
         "prompt_chars": len(prompt),
         "software": {"python": sys.version.split()[0], "platform": platform.platform()},
