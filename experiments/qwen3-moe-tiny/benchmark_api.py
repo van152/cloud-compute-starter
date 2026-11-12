@@ -204,6 +204,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000/v1")
     parser.add_argument("--model", required=True, help="model name accepted by the server")
+    parser.add_argument("--model-revision", default=None, help="resolved model commit or revision, if known")
     parser.add_argument("--engine", default="unknown", help="label such as vLLM or SGLang")
     parser.add_argument("--engine-version", default=None)
     parser.add_argument("--api-key-env", default=None, help="environment variable holding an API key")
@@ -275,6 +276,7 @@ def main() -> int:
         "status": "completed" if summary["failed_requests"] == 0 else "partial_failure",
         "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "model": args.model,
+        "model_revision": args.model_revision,
         "engine": args.engine,
         "engine_version": args.engine_version,
         "endpoint_scheme": scheme,
