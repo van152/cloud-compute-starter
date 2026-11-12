@@ -61,7 +61,7 @@ python3 experiments/qwen3-moe-tiny/benchmark_api.py \
   --output experiments/qwen3-moe-tiny/results/YYYY-MM-DD/vllm-c1.json
 ~~~
 
-Repeat with concurrency 2, 4, and 8 while keeping server settings and workload fixed. Use <code>--no-include-usage</code> only when the server rejects streaming usage; a matching tokenizer can re-tokenize visible output as a fallback, but server-reported token usage is the preferred count. The report stores hashes and timing/count metadata, never the prompt or generated text. <code>--unique-prompts</code> changes the prompt suffix and is intended for prefix-cache experiments, not the default baseline.
+Pass <code>--model-revision</code> with the resolved checkpoint revision when known, and <code>--engine-version</code> with the serving runtime version. Repeat with concurrency 2, 4, and 8 while keeping server settings and workload fixed. Use <code>--no-include-usage</code> only when the server rejects streaming usage; a matching tokenizer can re-tokenize visible output as a fallback, but server-reported token usage is the preferred count. The report stores hashes and timing/count metadata, never the prompt or generated text. <code>--unique-prompts</code> changes the prompt suffix and is intended for prefix-cache experiments, not the default baseline.
 
 ## Optimization directions
 
